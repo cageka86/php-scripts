@@ -1,0 +1,144 @@
+<?php
+error_reporting(E_ALL & ~E_NOTICE);
+ini_set ('error_reporting', E_ALL & ~E_NOTICE);
+ini_set("display_errors","yes");
+date_default_timezone_set('Etc/GMT+0');
+set_time_limit(1*60*60); // 1hour
+// ini_set('memory_limit', '4000M');
+
+define(STEP_LOADING, 1000);
+
+$host = 'host';
+$user = 'user';
+$pass = 'pass';
+$db = 'db';
+
+$host2 = 'host2';
+$user2 = 'user2';
+$pass2 = 'pass2';
+$db2 = 'db2';
+
+print 'Start ('.date('H:i:s').")\r\n";
+
+$talbe_settings = array(
+
+	'full_copy' => array(
+		"small_table1",
+		"small_table2",
+		"small_table3",
+	),
+
+	'diff_copy' => array(
+		"big_table1",
+		"big_table2",
+		"big_table3",
+	)
+);
+
+function my_throw_exception($err) {
+	throw new Exception($err);
+}
+
+try {
+
+// Connecting, selecting database
+$link = mysql_connect($host, $user, $pass)
+    or my_throw_exception('Could not connect: ' . mysql_error($link));
+mysql_select_db($db, $link) or my_throw_exception('Could not select database');
+
+// Connecting, selecting database
+$link2 = mysql_connect($host2, $user2, $pass2)
+    or my_throw_exception('Could not connect2: ' . mysql_error($link2));
+mysql_select_db($db2, $link2) or my_throw_exception('Could not select database2');
+
+foreach ($talbe_settings as $loading_type => $talbes) {
+
+	foreach ($talbes as $table) {
+
+		$min = $max = 0;
+
+		if ($loading_type == 'full_copy') {
+
+			mysql_query("truncate $table", $link2) or my_throw_exception('Query failed: ' . mysql_error($link2));
+
+			$query = "select count(*) as max from $table";
+			$result = mysql_query($query, $link) or my_throw_exception('Query failed: ' . mysql_error($link));
+			$line = mysql_fetch_array($result, MYSQL_ASSOC);
+			$max = $line['max'];
+		}
+
+		if ($loading_type == 'diff_copy') {
+
+			$query = "select max(id) as max from $table";
+			$result = mysql_query($query, $link2) or my_throw_exception('Query failed: ' . mysql_error($link2));
+			$line = mysql_fetch_array($result, MYSQL_ASSOC);
+			$min = (int)$line['max'];
+
+			$query = "select max(id) as max from $table";
+			$result = mysql_query($query, $link) or my_throw_exception('Query failed: ' . mysql_error($link));
+			$line = mysql_fetch_array($result, MYSQL_ASSOC);
+			$max = $line['max'];
+		}
+
+		print "table: $table, [min=$min, max=$max] loading_type=$loading_type (".date('H:i:s').")\r\n";
+
+		for ($i = ($min + ($loading_type == 'diff_copy' ? 1 : 0)); $i <= $max; $i += STEP_LOADING) {
+
+			// Performing SQL query
+			$query = "select * from $table ";
+
+			if ($loading_type == 'full_copy') {
+
+				$query .= " limit $i,".STEP_LOADING;
+			}
+
+			if ($loading_type == 'diff_copy') {
+
+				$query .= " where id >= $i and id < ".(int)($i + STEP_LOADING);
+			}
+
+
+			$result = mysql_query($query, $link) or my_throw_exception('Query failed: ' . mysql_error($link));
+
+			// print "$query\r\n";
+
+			$query = '';
+
+			while ($line = mysql_fetch_array($result, MYSQL_ASSOC)) {
+
+				foreach ($line as $key => $val) {
+
+					$line[$key] = ($val === null) ? 'null' : "'".mysql_real_escape_string($val, $link2)."'";
+				}
+
+				$values = implode(",", $line);
+
+
+				if (!$query) {
+
+					$query = "insert into $table (".'`'.implode('`,`',array_keys($line)).'`'.") values(".$values.")";
+				} else {
+
+			    	$query .= ", (".$values.")";
+				}
+			}
+
+			if ($query) {
+				mysql_query($query, $link2) or my_throw_exception('Query failed: '. mysql_error($link2). '$query='.$query);
+			}
+
+			# mysql_free_result($result);
+		}
+
+}
+}
+
+} catch (Exception $e) {
+	print $e->getMessage();
+}
+
+// Closing connection
+mysql_close($link);
+mysql_close($link2);
+
+print 'Finish ('.date('H:i:s').")\r\n";
